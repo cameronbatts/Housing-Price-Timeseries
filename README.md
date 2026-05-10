@@ -97,7 +97,7 @@ Forecasted housing starts growth using time series forecasting techniques.
 
 Visualization of recurring seasonal behavior within housing market activity.
 
-![Seasonality](./Images/Seasonality(1).png)
+![Seasonality](./Images/Seasonality.png)
 
 ---
 
