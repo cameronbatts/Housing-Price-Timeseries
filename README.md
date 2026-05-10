@@ -20,7 +20,7 @@ The objective was to evaluate how housing supply activity relates to national ho
   - U.S. Housing Starts
 - Cleaned and transformed monthly economic time series data
 - Conducted exploratory trend and stationarity analysis
-- Applied forecasting workflows for housing market analysis
+- Applied decomposition and forecasting workflows
 - Built Vector Autoregression (VAR) models to analyze dynamic relationships between variables
 - Used Quarto and R Markdown for reproducible analytical reporting
 
@@ -45,6 +45,7 @@ Source: https://fred.stlouisfed.org/
 - Housing market trend analysis
 - Economic indicator analysis
 - Vector Autoregression (VAR)
+- Seasonality decomposition
 - Forecasting with multiple variables
 - Reproducible analytical reporting
 
@@ -52,27 +53,51 @@ Source: https://fred.stlouisfed.org/
 
 ## Project Visuals
 
-### Housing Price Trends
+### Housing Starts Trend Analysis
 
-Visualization of historical housing price movement using the S&P/Case-Shiller U.S. National Home Price Index.
+Historical housing starts activity showing long-term cyclical movement and market disruptions.
 
-![Housing Price Trends](images/housing-price-trends.png)
-
----
-
-### Housing Starts Analysis
-
-Monthly U.S. housing starts used to evaluate supply-side market activity and economic trends.
-
-![Housing Starts Analysis](images/housing-starts-analysis.png)
+![Housing Starts](images/housing-starts.png)
 
 ---
 
-### VAR & Forecasting Results
+### Housing Market & Price Index Comparison
 
-Time series forecasting and Vector Autoregression (VAR) outputs used to analyze relationships between housing prices and housing starts.
+Comparison of housing starts and national housing price index behavior over time.
 
-![VAR Forecast Results](images/var-forecast-results.png)
+![Time Series](images/time-series.png)
+
+---
+
+### Additive Time Series Decomposition
+
+Decomposition of trend, seasonality, and residual components within the housing market time series.
+
+![Additive Decomposition](images/decomp-additive-time-series.png)
+
+---
+
+### Growth Index & Lag Analysis
+
+Lagged relationship analysis between housing starts growth and housing price growth.
+
+![Growth Index](images/growth-index.png)
+
+---
+
+### Housing Growth Forecasting
+
+Forecasted housing starts growth using time series forecasting techniques.
+
+![Housing Growth Forecast](images/housing-growth-forecast.png)
+
+---
+
+### Seasonal Pattern Analysis
+
+Visualization of recurring seasonal behavior within housing market activity.
+
+![Seasonality](images/seasonality.png)
 
 ---
 
