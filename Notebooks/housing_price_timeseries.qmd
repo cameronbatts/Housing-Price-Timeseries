@@ -1,0 +1,1632 @@
+---
+title: 'Housing Price Forecasting via Time Series & VAR Analysis'
+format:
+  html:
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Case Study Background
+
+In this case study we are attempting to forecast house price growth.
+
+We will structure these forecasts using the natural temporal persistence in this series, as well as leveraging the information contained in exogenous drivers such as housing starts.
+
+## Outline
+
+We will categorize our research process into 3 broad steps: 1) Explore, 2) Explain, 3) Forecast.
+
+# Explore
+
+## Housekeeping
+
+<!-- limit output height -->
+
+```{css, echo=FALSE}
+.scroll-200 {
+  max-height: 200px;
+  overflow-y: auto;
+  background-color: inherit;
+}
+```
+
+```{r, include=TRUE, echo = FALSE}
+knitr::opts_chunk$set(fig.width=10, fig.height=4,echo=TRUE, warning=FALSE, message=FALSE, class.output="scroll-200")
+```
+
+Standard best practice to clear workspace:
+
+```{r,echo=TRUE}
+rm(list=ls()) # clear work space
+cat("\014")  # clear console 
+```
+
+## Data
+
+Our object of interest is housing starts. An important feature is housing prices. There are undoubtedly many other relevant features, but we will focus on this manageable subset so that we can focus on the time series methods. The specific features are chosen to highlight certain time series techniques, not necessarily their explanatory power.
+
+Our data source will be FRED (https://fred.stlouisfed.org/) from the St. Louis Federal Reserve.
+
+We can obtain our data via FRED's API using the `fredr` package. To do so, you need to obtain a free API key by visiting (https://fred.stlouisfed.org/docs/api/api_key.html).
+
+After you've obtained the key, save it to a sample txt file and store in your working directory.
+
+### Connect to FRED API
+
+```{r}
+#install.packages("fredr") 
+library(fredr)
+fred_api_key = read.delim("API_Key.txt", header = FALSE, sep="")[[1]] 
+fredr_set_key(fred_api_key) #Store the API key as an environment variable
+```
+
+### Download Housing Prices
+
+#### Set start/end dates
+
+```{r}
+startdate = "1959-01-01"
+enddate = "2023-12-01"
+```
+
+Notice that the FRED database uses the first of the month as a generic placeholder for the monthly value. That is in contrast to 1) the date at which the data for that month was released, and 2) in contrast for the date at which the activity took place
+
+#### Download Prices
+
+In order to download data via FREDR we need the FRED series_id. These are easily obtained by searching directly on FRED's website.
+
+Price: S&P/Case-Shiller U.S. National Home Price Index (CSUSHPINSA)
+
+```{r}
+CSUSHPINSA<-fredr(
+  series_id = "CSUSHPINSA",
+  frequency = "m", # monthly
+  observation_start = as.Date(startdate),
+  observation_end = as.Date(enddate)
+  )
+```
+
+#### Download Housing Starts
+
+Housing starts: New Privately-Owned Housing Units Started: Total Units (HOUSTNSA)
+
+```{r}
+HOUSTNSA<-fredr(
+  series_id = "HOUSTNSA",
+  frequency = "m", # monthly
+  observation_start = as.Date(startdate),
+  observation_end = as.Date(enddate)
+  )
+HOUSTNSA$value <- HOUSTNSA$value*1000 # Convert raw data "Thousands of Units" to "Units" 
+```
+
+### Combine
+
+Let's combine the data into a single data frame for ease of analysis.
+
+```{r}
+library(dplyr)
+HOUSTNSA<-HOUSTNSA %>%
+  dplyr::select(date,value)
+
+CSUSHPINSA<-CSUSHPINSA %>%
+  dplyr::select(date,value)
+
+temp_df<-merge(HOUSTNSA,CSUSHPINSA,by="date",all=T)
+colnames(temp_df) <- c("Date","HousingStart","PriceIndex")
+```
+
+### Check for missing
+
+```{r}
+head(temp_df)
+```
+
+```{r}
+summary(is.na(temp_df))
+```
+
+```{r}
+idxHousingStarts<-is.na(temp_df$HousingStart)
+idxPrices<-is.na(temp_df$PriceIndex)
+par(mfrow=c(1,2))
+plot(idxPrices,main="Prices")
+plot(idxHousingStarts,main="HousingStarts")
+```
+
+### Clean
+
+- We should NOT simply eliminate the rows with missing data. This (usually) works fine in cross sectional data. But in time series, each row is connected to the nearby rows. Omitting a row deletes critical information, which most likely will influence your results.
+
+- We must think WHY the data is missing. If it is random throughout the series, then we could use a local mean between adjacent points, or some other method of interpolation.
+
+- Thankfully, in our case, the data is missing at the edges of the dataset for a structural reason we noted above. So, we can trim the sample to make the series balanced.
+
+```{r}
+df <- na.omit(temp_df) # remove the rows with NA
+head(df)
+```
+
+## Basic EDA
+
+EDA in time series looks much like typical EDA, but the temporal nature does offer some differences in interpretation and other avenues to explore.
+
+### Full sample correlation matrix
+
+```{r}
+cor(df[,c(-1)]) # get grid of the date column
+```
+
+- The correlation of \~.01 implies that on average the movements of housing starts over time don't track well the movements of housing prices.\
+- This might not be an appropriate measure of the relationship between the series for several reasons.
+- The two series might not move together contemporaneously. e.g. perhaps prices this month correlate to starts in five months from now (lead/lag).
+- Also, the correlation only captures the average relationship through time. Perhaps the the series move together only in up/down trends, but not in the middle of their respective distributions.
+- Or perhaps their relationships have changed through time.
+- We will need more instructive EDA for time series.
+
+### Descriptive Stats
+
+```{r}
+summary(df)
+```
+
+### Time Series Plots
+
+```{r}
+library(tidyverse)
+plot_df <- df %>% 
+  `colnames<-`(c("Date","HousingStart","PriceIndex \n(Jan 2000=100)")) %>% 
+  pivot_longer(c("HousingStart","PriceIndex \n(Jan 2000=100)")) # Convert wide dataframe to long
+ggplot(data = plot_df, aes(x = Date,y = value, group = name, color = name)) + 
+  geom_line() + 
+  scale_x_date(date_labels = "%Y (%b)") + # format datetime
+  facet_grid(name~., scales = "free_y") + 
+  labs(x = "", y = '') +
+  theme(legend.position = "none")
+```
+
+We need to address each before we proceed with modeling.
+
+## Seasonality
+
+### Understand Seasonality
+
+Let's zoom in on housing starts.
+
+```{r}
+library(ggplot2)
+ggplot(data = df, aes(x = Date,y = HousingStart)) + 
+  geom_line() + 
+  scale_x_date(date_labels = "%Y (%b)") + # format datetime
+  labs(x = "", y = "Housing Start Units")
+```
+
+Why might this seasonality exist?
+
+There are many ways to adjust for these seasonal patterns.
+
+### Prepare the df for analysis
+
+```{r}
+library(xts)
+FirstObs=df$Date[1]
+#We could parse the FirstObs chr string, but for our purposes it's easier to input by hand the start date
+df_ts <- ts(xts(df[,2:3], order.by = df$Date), frequency = 12, start = c(1987,1)) 
+
+```
+
+### Moving Avg
+
+```{r}
+library(TTR)
+SMA24<-SMA(df_ts[,"HousingStart"],n=24) # Create a simple 24 period moving avg using `SMA()` 
+toplot<-cbind(as.xts(df_ts[,"HousingStart"]),as.xts(SMA24))
+colnames(toplot)[1]="Level" # Add column name   
+colnames(toplot)[2]="24mth MovAvg" # Add column name
+plot(toplot,main="Housing Starts",legend.loc="topright", auto.legend=TRUE)
+```
+
+- The red line (i.e. the SMA) takes the trailing local average over 24months.
+- The smoother average can give us a sense of the underlying trend of housing starts, abstracting away from the seasonal variation.
+- In our case, housing starts have been declining in the recent period, but not by as much as the raw series suggests, because we are in a seasonal down turn near the end of the series (Winter 2023).
+
+### Seasonal Decomposition
+
+We could decompose the housing starts series into 3 pieces: 1) trend, 2) seasonal, 3) noise. The decomposition can be additive or multiplicative. There are numerous techniques for identifying and extracting the 3 components. Let's demonstrate a few.
+
+#### Classical Decomposition
+
+Classical decomposition methods compute the seasonal component by essentially including dummy variables for each periodic unit (e.g. month, quarters, etc..)
+
+```{r}
+library(stats)
+decomp<-decompose(df_ts[,"HousingStart"], type="additive")
+plot(decomp) # plot components
+```
+
+- Panel 1: Raw data
+
+- Panel 2: Trend of the housing starts series, which is extracted using a moving average
+
+- Panel 3: Seasonal captures the seasonal variations of the Raw data around the trend
+
+- Panel 4: Is the noise in the Raw data that can not be explained by the Trend nor the Seasonal components
+
+- After the decomposition is implemented we can easily construct a seasonally adjusted series by subtracting the seasonal components from the raw series.
+
+- We often report time series as seasonally adjusted values to abstract away from the seasonal variations and uncover the structural behavior of the time series.\
+
+- For instance, policy makers might be able to influence the underlying trend.
+
+```{r}
+SA = decomp$x-decomp$seasonal # Raw Minus Seasonal
+```
+
+Compare the SA and NSA
+
+```{r}
+Trend = decomp$trend
+library(forecast)
+forecast::autoplot(df_ts[,"HousingStart"], series="Raw Data") + 
+  forecast::autolayer(decomp$x-decomp$seasonal, series="Seasonally Adjusted") +
+  forecast::autolayer(decomp$trend, series="Trend") +
+  xlab("Year") + ylab("") + labs(color = "") + 
+  ggtitle("Classical Additive Seasonally Adjusted") +
+  scale_colour_manual(values=c("black","blue","red"), breaks=c("Raw Data","Seasonally Adjusted","Trend")) +
+  theme(legend.position="bottom")
+```
+
+#### X11 Decomposition
+
+The X11 approach is a variant of the classical decomposition.
+
+```{r}
+library(seasonal)
+x11decomp <- seas(df_ts[,"HousingStart"], x11="")
+forecast::autoplot(x11decomp) +
+  ggtitle("X11 Decomposition")
+```
+
+Compare SA and NSA
+
+```{r}
+forecast::autoplot(df_ts[,"HousingStart"], series="Raw Data") +
+  autolayer(seasadj(x11decomp), series="Seasonally Adjusted") +
+  autolayer(trendcycle(x11decomp), series="Trend") +
+  xlab("Year") + ylab("") + labs(color = "") + 
+  ggtitle("X11 Seasonally Adjusted") +
+  scale_colour_manual(values=c("black","blue","red"), breaks=c("Raw Data","Seasonally Adjusted","Trend")) +
+  theme(legend.position="bottom")
+```
+
+#### STL Decomposition
+
+STL is an acronym for "Seasonal and Trend decomposition using Loess", wherein Loess is a method for estimating nonlinear relationships.
+
+```{r}
+stldecomp <- stl(df_ts[,"HousingStart"], s.window="periodic", robust=TRUE)
+
+forecast::autoplot(stldecomp) +
+  ggtitle("STL Decomposition")
+```
+
+Loess is data intensive method and traditionally two-sided, meaning that we need data on either side of each point in order to apply the adjustment.
+
+```{r}
+forecast::autoplot(df_ts[,"HousingStart"], series="Raw Data") +
+  autolayer(seasadj(stldecomp), series="Seasonally Adjusted") +
+  autolayer(trendcycle(stldecomp), series="Trend") +
+  xlab("Year") + ylab("") + labs(color = "") + 
+  ggtitle("STL Seasonally Adjusted") +
+  scale_colour_manual(values=c("black","blue","red"), breaks=c("Raw Data","Seasonally Adjusted","Trend")) +
+  theme(legend.position="bottom")
+```
+
+#### Compare the Decomp Methods
+
+```{r}
+forecast::autoplot(df_ts[,"HousingStart"], series="Raw Data") +
+  autolayer(decomp$x-decomp$seasonal, series="Classical Additive Seasonally Adjusted") +
+  autolayer(seasadj(x11decomp), series="X11 Seasonally Adjusted") +
+  autolayer(seasadj(stldecomp), series="STL Seasonally Adjusted") +
+  xlab("Year") + ylab("") + labs(color = "") + 
+  ggtitle("Seasonally Adjusted") +
+  scale_colour_manual(values=c("black","darkgreen","steelblue","darkred"),
+                      breaks=c("Raw Data","Classical Additive Seasonally Adjusted",
+                               "X11 Seasonally Adjusted", "STL Seasonally Adjusted")) +
+  theme(legend.position="bottom") + guides(colour = guide_legend(ncol = 2))
+```
+
+Note that this is NOT a forecasting exercise, so we don't typically use some type of out of sample MSFE to determine which decomposition is best. We can investigate in sample behavior among the \`\`Noise" terms using MSE, AIC, and the like. Caution: x11 standardizes the noise and seasonal terms, so you can't compare the 3 models directly, without some adjustments. (beyond our purview)
+
+```{r}
+mean(decomp$random^2,na.rm = TRUE)
+mean(resid(x11decomp)^2,na.rm = TRUE)
+mean((stldecomp$time.series[3])^2,na.rm = TRUE)
+```
+
+We could proceed exclusively with the seasonally adjusted series. But for instructional purposes, we'll work with both the raw and seasonally adjusted series.
+
+## Stationarity
+
+Stationarity is a time series concept regarding the behavior of the data in small windows of time.
+
+- Consider a series that is not \`\`variance stationary". It might have been relatively calm, with low variability. But then during COVID, volatility spikes. We should accommodate for this structural change within our model.
+- Likewise, consider a series that is not \`\`mean stationary". It might have a persistent upward trend. We should accommodate for this trend when attempting to find drivers of the series.\
+- Most standard time series modeling techniques require stationarity before implementing.
+- Even those that don't technically require stationarity could benefit from this type of behavior.
+- Therefore, it's essential we are able to detect and remedies any violations to this assumption.
+
+### Detect Non-Stationarity w/ADF
+
+There are several tests to detect (non) stationarity.
+
+The Augmented Dickey Fuller (ADF) test focuses on a manifestation of non stationarity called a unit root. A particular case of unit roots is the \`Random Walk' wherein today's value is equal to yesterday's + random noise.
+
+ADF Test
+
+Ho: Non Stationary (Unit Root aka Random Walk)
+
+Ha: Stationary
+
+```{r}
+library(tseries)
+adf.test(df_ts[,"HousingStart"])
+adf.test(SA)
+```
+
+- Notice the high pvalue implies we fail to reject (i.e. we have a non stationary series).\
+- This is true for both the raw series as well as the seasonally adjusted series.
+- We saw previosly that these series have several changes in trend (dramatic drop and then a steady up turn).
+
+### Detect Non-Stationarity w/ KPSS
+
+The Kwiatkowski-Phillips-Schmidt-Shin (KPSS) test can be used in several ways. We'll focus on its importance for testing trend stationarity (i.e. is the series stationary after adjusting for its trend).
+
+H0: Trend Stationary
+
+Ha: Not Trend Stationary
+
+```{r}
+kpss.test(df_ts[,"HousingStart"], null="Trend")
+kpss.test(SA, null="Trend")
+```
+
+- Note the low pvalues imply that we reject and that we have both the raw and SA series that are not trend stationary.
+- This implies that the seasonal osciallations were likely relatively steady over time, and thereby not engendering a non stationarity.\
+- If we can accommodate for the trend, we might be able to have a stationary process, which is ready for further modeling.
+
+### Detect Non-Stationarity w/ACF
+
+Autocorrelation Function (ACF) tells us the correlation of a series with its own past.
+
+The Partial Autocorrelation Function (PACF) tells us the autocorrelation of a series with its own past after correlation for the impact of other lags of the series.
+
+The visualizations are collectively referred to as the (auto)correlogram.
+
+```{r}
+library(astsa)
+acf2(df_ts[,"HousingStart"], main = "ACF and PACF of Housing Starts Units")
+```
+
+- First Bar: The correlation between housing starts in month t has a roughly .9 correlation with housing starts in month t-1.\
+
+- Second Bar: The correlation between housing start in month t has a roughly .8 correlation wth housing starts in month t-2.
+
+- First Bar: The correlation between housing starts in month t has a roughly .9 correlation with housing starts in month t-1. (i.e. it's the same as the ACF)
+
+- Second Bar: After controlling for the effects of month t-1, housing starts in month t have a slight negative correlation with housing starts in month t-2.
+
+- The ACF depicts a seasonal pattern (notice the wave cresting every 12mhts).\
+
+- The PACF exhibits strong persistence near the 1st lags, which might be helpful when we model the process with its own past lags (e.g. ARMA).
+
+### Remedy w/Differencing
+
+A common approach to overcoming non stationarity is by taking the (percent) difference in the series. Often, if a series is non-stationary, then computing the $\Delta x_{t}=x_{t}-x_{t-1}$ is stationary. If the first difference is not stationary, we can compute a second difference analogously.
+
+Often in our modeling process these growth rates are the objects of interest, which aids our interpretation of any results.
+
+Let's first difference the Housing Starts series and recompute the ADF test.
+
+```{r}
+FirstDiff <- diff(df_ts[,"HousingStart"]) # compute the first difference in housing
+FirstDiff <- na.omit(FirstDiff) #clean up the data
+plot(FirstDiff) 
+adf.test(FirstDiff) 
+```
+
+- Notice that the low pvalue suggests we now have a stationary process.\
+- This is confirmed by visual inspection of the time series plot, which has roughly similar mean and variance throughout the time series.
+
+We can also accommodate for seasonality within our differencing method by taking year-over-year growth rates.
+
+```{r}
+SeasDiffFirstDiff <- diff(FirstDiff,lag = 12)
+plot(SeasDiffFirstDiff)
+adf.test(SeasDiffFirstDiff) 
+```
+
+Pro Tip: Converting your series to logs and then computing the difference approximates a growth RATE.
+
+Converting to growth rates is also helpful to standardize our features. So, let's do that for housing starts.
+
+```{r}
+library("quantmod")
+HousingStartGrowth = na.omit(Delt(df_ts[,"HousingStart"]))*100 # convert to growth rate
+ 
+```
+
+```{r}
+adf.test(HousingStartGrowth)
+```
+
+### Housing Prices: Stationarity
+
+```{r}
+adf.test(df_ts[,"PriceIndex"])
+plot(df_ts[,"PriceIndex"])
+```
+
+- The high pvalue suggests non-stationarity.
+- There is a clear trend and a structural change around the 2008 crash.
+
+Let's compute a 1st difference
+
+```{r}
+PriceIndexGrowth = na.omit(Delt(df_ts[,"PriceIndex"]))*100
+adf.test(PriceIndexGrowth)
+plot(PriceIndexGrowth) 
+```
+
+So let's adjust that Growth series for seasonality.
+
+```{r}
+#PriceIndexGrowth_decomp<-decompose(df_ts[,"PriceIndex"], type="additive")
+PriceIndexGrowth_decomp<-decompose(PriceIndexGrowth, type="additive")
+PriceIndexGrowthSA = PriceIndexGrowth - PriceIndexGrowth_decomp$seasonal
+plot(PriceIndexGrowthSA)
+adf.test(PriceIndexGrowthSA)
+
+```
+
+- The low pvalue now suggests a stationary series.\
+- There are several structural features in the price series (the crash, the trend, the varying seasonality) that need to be addressed before we can model this series.
+
+### Prep the df
+
+Let's group all of these adjusted series together
+
+```{r}
+df_adj <- data.frame(cbind(HousingStartGrowth, PriceIndexGrowthSA)) %>%
+  `colnames<-`(c("HousingStartGrowth","PriceIndexGrowthSA"))
+df_adj$Date <- df$Date[c(-1)]
+#df_adj<-na.omit(df_adj)
+```
+
+## Time Series EDA
+
+Now that we have adjusted our data series, let's examine their time series properties.
+
+### AutoCorrelogram
+
+```{r}
+tsdisplay(df_adj$HousingStartGrowth, main = "Time Series Plot of Housing Start Units Growth")
+```
+
+Let's inspect the price series.
+
+```{r}
+tsdisplay(df_adj$PriceIndexGrowthSA, main = "Time Series Plot of SA Price Index Growth")
+```
+
+- The oscillation in the ACF suggests a bit of seasonality remains.
+- The decline in the ACF and the two spikes in the PACF suggest short term persistence in the series. We can leverage this when we model the series.
+
+### Cross Correlations
+
+Sometimes series lead/lag one another for \`economic' reasons. We can visualize and detect this cross auto correlations with a CCF (Cross Correlation Function).
+
+Here we'll examine whether growth of housing starts lead or lag price growth.
+
+```{r}
+ccfvalues = ccf(x=df_adj$HousingStartGrowth, y=df_adj$PriceIndexGrowthSA, 
+    main = "CCF of Housing Start Growth and Price Index Growth", lag.max = 24)
+```
+
+When lag = -1 we are computing the cor(HousingStart_t-1, Price_t); i.e. Starts LEAD Prices.
+
+When lag = +1 we are computing the cor(HousingStart_t+1,Price_t); i.e. Starts LAG Prices.
+
+Positive values indicate that the series move together. Negative values indicate the series move in opposite directions.
+
+The blue lines provide a 95% CI.
+
+- The spikes are more prominent in the negative lag area, suggesting possible leading effects for housing starts.
+- A model such as $Prices_{t} = \alpha + \beta HousingStarts{t-1} + e_{t}$ might be useful for explaining/forecast prices.
+- However, there is not as much information in prices to forecast future housing starts.
+- Regardless of the direction, neither series has statistically significant lead/lag effects, and thus may not be helpful for modeling.
+
+Here is an alternative visualization.
+
+```{r}
+library(astsa)
+HSGrowth <- df_adj$HousingStartGrowth
+PriceGrowth <- df_adj$PriceIndexGrowthSA
+lag2.plot(series1 = HSGrowth, 
+          series2 = PriceGrowth,
+          max.lag = 11) 
+# Note: series1 is the one that gets lagged. 
+```
+
+# Explain
+
+Now that we've explored our data's temporal patterns let's attempt to explain its movements. We'll do so with traditional and time series econometric techniques.
+
+## Regression
+
+Since we are dealing with time series data we need to be careful about what information we are using and WHEN that occurs. Let's focus on a CONTEMPORANEOUS regression, wherein we are using data at time t to explain our outcome variable (housing prices) at time t.\
+$$ Price_{t}=\alpha + \beta Starts_{t} + u_{t}$$ Q: What do we assume about the errors of this model?
+
+- Among other things, we assume that the errors are independent of each other.\
+- In our time series setting, that means the errors in January are not related to the errors in February, etc..
+- This is a sickness called serial correlation, wherein the errors exhibit autocorrelation.
+- If your model is plagued by serial correlation your estimators typically remain unbiased, but are not efficient.
+
+```{r}
+LinearModel = lm(PriceIndexGrowthSA ~ HousingStartGrowth, data = df_adj)
+summary(LinearModel)
+```
+
+- The impact is not statistically significant.
+- i.e. the growth rate of housing starts in this month does not help to explain the seasonally adjusted growth rate of prices in this month.
+- If our model is \`\`sick" with serial correlation, this t-stat could be contaminated, and give us misleading conclusions.
+
+### Detect Serial Correlation
+
+There are myriad visual and formal tests for serial correlation. Most operate on the residuals of the model.
+
+#### Visual inspection
+
+Let's inspect our residuals for troublesome patterns.
+
+```{r}
+checkresiduals(LinearModel)
+```
+
+- Notice the spikes in the residual ACF.\
+- These are indicative of some type of omitted temporal pattern, which might suggest the presence of serial correlation.\
+- Also notice that the model does not seem to work well around the 2008 crash and COVID. These structural changes could impede our ability to detect the underlying relation between starts and prices.
+
+#### Durbin Watson Test
+
+The Durbin Watson (DW) test asks whether the model residuals are auto correlated.
+
+Ho: No auto correlation in residuals
+
+Ha: Auto correlation in residuals
+
+```{r}
+library(lmtest)
+dwtest(formula = LinearModel,  alternative = "two.sided")
+```
+
+#### BG Test
+
+Breusch Godfrey (BG) Test
+
+Ho: Model residuals not autocorrelated
+
+Ha: Model residuals are autocorrelated
+
+```{r}
+bgtest(formula = LinearModel)
+```
+
+#### LB Test
+
+Ljung Box Test
+
+Ho: Model residuals not autocorrelated
+
+Ha: Model residuals are autocorrelated
+
+```{r}
+Box.test(residuals(LinearModel), type = "Ljung-Box") 
+```
+
+### Remediating Serial Correlation
+
+If we are lucky enough to know the precise form of the serial correlation, then we can include it directly in our modeling via GLS. However, that is seldom the case in practice. So, we rely upon HAC (heteroscedasticity and autocorrelation consistent) standard errors.
+
+```{r}
+library(sandwich)
+NW_VCOV_LinearModel <- NeweyWest(LinearModel, prewhite = F, adjust = T) # The pre-whitening and adjust are set to F, and T respectively to ensure the proper formula and small sample adjustments are made.
+
+# Compute Standard Errors 
+HAC_err=sqrt(diag(NW_VCOV_LinearModel))
+HAC_err
+```
+
+Let's see if this new std error is meaningful.
+
+```{r}
+summary(LinearModel)$coefficients
+LinearTValue = summary(LinearModel)$coefficients[2,1]/summary(LinearModel)$coefficients[2,2]
+LinearTValue
+```
+
+```{r}
+HACTValue = summary(LinearModel)$coefficients[2,1]/HAC_err[2]
+HACTValue
+```
+
+- Notice the (slight) differences in the standard errors.\
+- The t value has not changed much.\
+- The implication is that eventhough there was a statistical presence of serial correlation, this remedy did not change the outcome (i.e. housing start growth is not a significant driver of future price growth)
+- That could mean that HAC hasn't adequately dealt with the serial correlation, or that the problem was not pervasive.
+- We can iterate our test and remediation process, but will forgo that for the sake of this exercise.
+
+## Rolling Regression
+
+Consider running a regression from Jan87 through Dec97 and grabbing $\beta$.
+
+Then run the regression again on Feb87 through Jan98, and grabbing the $\beta$.
+
+- An important feature of time series models is coefficient stability. i.e. is the \`economic' process stable through time?
+- We can investigate by running our model over small windows through time.
+- If the coefficients change often/suddenly, it implies something is misspecified in our model.
+
+#### Moving Window
+
+Let's run our regression over a fixed window of 30 periods, grab the results, then move the 30 period window forward by one month, rerun the regression, and repeat until the end of the sample.
+
+```{r}
+library(tidyfit)
+library(tidyr)
+library(purrr)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+RollingReg<-df_adj %>%
+  regress(PriceIndexGrowthSA~HousingStartGrowth, 
+          m("lm",vcov.="HAC"),
+          .cv = "sliding_index", .cv_args=list(lookback=months(30),index = "Date"), 
+          .force_cv= TRUE, .return_slices=TRUE)
+
+beta.df<-coef(RollingReg)
+
+beta.df <- beta.df %>% 
+  unnest(model_info) %>%
+  filter(term=="HousingStartGrowth") %>%
+  mutate(upper = estimate + 2 * std.error, lower = estimate - 2 * std.error) %>%
+  mutate(beta = estimate)
+
+beta.df %>% 
+  mutate(Dates = as.Date(slice_id)) %>% 
+  filter(term == "HousingStartGrowth") %>% 
+  ggplot(aes(Dates)) +
+  geom_ribbon(aes(ymax = upper, ymin = lower), alpha = 0.25) +
+  geom_line(aes(y = beta)) +
+  theme_bw(8)
+
+```
+
+- beta is the explanatory power of housing start growth in month t upon SA price growth in month t.\
+- There seems to be structure changes during the housing crash of 2008 and the COVID spike. - We might want to include dummies / control variables to accommodate for these periods.
+- 30 periods is rather arbitrary. We should tune that parameter, but we won't for the sake of time.
+
+# Forecast
+
+Now that we've explored the data and have explained its movements, we can attempt to forecast. There are myriad models to forecast a time series. Some use exogenous features (e.g. housing starts lags to forecast housing prices), while others use the series' own temporal persistence (i.e. today is a good predictor for tomorrow). We will explore a few common approaches.
+
+## Training and Test Samples
+
+- 
+
+  1)  The temporal persistence of the data means that each observation is connected to the others. Randomly breaking them apart loses valuable information
+
+- 
+
+  2)  There is danger of leakage. We can't train on 2023 and test on 2022. The DGP of 2023 is built from the behavior of 2022. This is cheating.\
+
+- Relatedly, typical cross validation techniques are in danger of similar issues with time series.
+
+- We typically order the observations by time (they already are) and chose the most recent "x" observations as testing and all dates prior to train.
+
+- The size of the test/train split remains an choice that we should stress test, just as we do with cross sectional models.
+
+- Moreover, we need to ensure that our training sample has similar structural characteristics as our test sample. e.g. we want to avoid training housing prices 2010-2019 and then test in 2020 amid the COVID shock.
+
+For our example we will use
+
+Train: Jan1987-Dec2013
+
+Test: Jan2014-end of sample
+
+We could create separate dataframes from each subsample, but we will avoid that in order to illustrate some subseting features of the functions we will use.
+
+Let's adjust the dataframe into a time series object so that we can take advantage of certain time series features.
+
+```{r}
+df_adjts <- ts(df_adj, start = c(1987,02), frequency = 12)
+```
+
+## Distributed Lag
+
+A distributed lag model forecasts a series with past values of some exogenous series (depicted here with one lag). $Price_{t}=\alpha + \beta Starts_{t-1} + u_{t}$.
+
+An autoregressive distributed lag (ADL) also includes lagged values of Price (depicted here with one lag). $Price_{t}=\alpha + \beta Starts_{t-1} + \gamma Price_{t-1} + u_{t}$.
+
+We can use the CCF to detect leads/lags in our training sample.
+
+```{r}
+ccf(x=window(df_adjts[,"HousingStartGrowth"], end = c(2013,12)),
+    y=window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+    main = "CCF of Housing Start Growth and Price Index Growth")  
+```
+
+- The spikes within the negative lag regions suggests that Starts appear to have some predictive power over future prices.\
+- However, these spikes aren't strongly significant, so we proceed with caution.
+- The reverse doesn't seems to be true (But, we'll explore such situations with tools later)
+- Given the temporal persistence of the price series, let's try an ADL model. We'll demonstrate with 2 lags on price growth and 12 on starts. We can also use information criterion to guide lag selection.
+
+```{r}
+ADL_alldata <- ts.intersect(df_adjts, 
+                      PriceIndexGrowthLag1 = stats::lag(df_adjts[,"PriceIndexGrowthSA"], -1),
+                      PriceIndexGrowthLag2 = stats::lag(df_adjts[,"PriceIndexGrowthSA"], -2),
+                      HousingStartGrowthLag1 = stats::lag(df_adjts[,"HousingStartGrowth"], -1),
+                      HousingStartGrowthLag2 = stats::lag(df_adjts[,"HousingStartGrowth"], -2),
+                      HousingStartGrowthLag3 = stats::lag(df_adjts[,"HousingStartGrowth"], -3),
+                      HousingStartGrowthLag4 = stats::lag(df_adjts[,"HousingStartGrowth"], -4),
+                      HousingStartGrowthLag9 = stats::lag(df_adjts[,"HousingStartGrowth"], -9),
+                      HousingStartGrowthLag10 = stats::lag(df_adjts[,"HousingStartGrowth"], -10),
+                      HousingStartGrowthLag11 = stats::lag(df_adjts[,"HousingStartGrowth"], -11),
+                      HousingStartGrowthLag12 = stats::lag(df_adjts[,"HousingStartGrowth"], -12)) %>%
+  `colnames<-`(c(colnames(df_adjts), 
+                 "PriceIndexGrowthLag1","PriceIndexGrowthLag2","HousingStartGrowthLag1",
+                 "HousingStartGrowthLag2","HousingStartGrowthLag3","HousingStartGrowthLag4",
+                 "HousingStartGrowthLag9","HousingStartGrowthLag10","HousingStartGrowthLag11","HousingStartGrowthLag12"))
+
+ADL_traindata= window(ADL_alldata, end = c(2013,12))
+ADL_testdata= window(ADL_alldata, start = c(2014,1))
+
+### Estimate ADL Model
+ADL <- lm(PriceIndexGrowthSA ~ PriceIndexGrowthLag1+PriceIndexGrowthLag2+
+            HousingStartGrowthLag1 + HousingStartGrowthLag2 + HousingStartGrowthLag3 + HousingStartGrowthLag4 +
+            HousingStartGrowthLag9 + HousingStartGrowthLag10 + HousingStartGrowthLag11+HousingStartGrowthLag12,
+           data = ADL_traindata)
+summary(ADL)
+acf2(residuals(ADL), main = "ACF and PACF of ADL Model Residuals") 
+```
+
+- The model residuals look nice and clean.\
+
+- There appears to be just a bit of temporal persistence left in the two month lag, but that's minor
+
+- The first 2 lags of prices seem significant. The first is \>0, implying a rise in prices this month are associated with a rise in prices next month. The opposite is true for 2 months prior.
+
+- Moreover, the first 2 lags of housing starts growth are significant and positive; i.e. if starts grow faster this month, prices are expected to rise next month.
+
+Let's compute the predicted value for our first observation in the training sample:
+
+```{r}
+predict(ADL, newdata = head(ADL_testdata,1), interval = "confidence", level=0.95)
+```
+
+- The "fit" is the prediction by the \`\`fitted'' model
+- the lwr and upr indicate the confidence bounds on that forecast.
+
+Let's compare to the observed value
+
+```{r}
+window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014,1), end = c(2014,1))#observation
+```
+
+## Holt Winters
+
+Holt Winters is a class of time series models that act entirely on the trend-cycle decomposition we highlighted earlier. It attempts to fit a model for the raw data by optimizing equations to represent three aspects of the additive time series: the level of the series, the trend of the series, and the seasonal component of the series.
+
+```{r}
+plot(decompose(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), type="additive"))
+```
+
+A preliminary diagnostic to determine of this class of model will be useful for you is whether the random component is very large in magnitude relative to the trend and seasonal. If so, the model likely won't be very good.
+
+Holt Winters is a flexible decomposition model well suited for forecasting. Within the R implementation there are several settings we can tune if desired:
+
+• alpha: the "base value". Higher alpha puts more weight on the most recent observations.
+
+• beta: the "trend value". Higher beta means the trend slope is more dependent on recent trend slopes.
+
+• gamma: the "seasonal component". Higher gamma puts more weighting on the most recent seasonal cycles.
+
+```{r}
+### Fitting with Holt-Winters
+HW1 <- HoltWinters(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), seasonal = "additive")
+
+### Plot fitted value of two models
+{plot(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+      ylab="Price Index Growth") # Visually evaluate the fits
+lines(HW1$fitted[,1], lty=2, col="red")
+legend("bottomleft",legend=c("Raw Data", "R Fit Holt-Winters"),
+       col=c("black","red"), lty=c(1,2), cex=0.8, box.lty=0)} 
+```
+
+```{r}
+optalpha = HW1$alpha
+optbeta = HW1$beta
+optgamma = HW1$gamma
+rbind(optalpha, optbeta, optgamma)
+```
+
+### Tuning Holt Winters
+
+```{r}
+### Fitting with Holt-Winters
+HW1 <- HoltWinters(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), seasonal = "additive")
+HW2 <- HoltWinters(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), seasonal = "additive",alpha=optalpha*.1,beta=optbeta,gamma=optgamma) 
+
+### Plot fitted value of two models
+{plot(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+      ylab="Price Index Growth") # Visually evaluate the fits
+lines(HW1$fitted[,1], lty=2, col="blue")
+lines(HW2$fitted[,1], lty=2, col="red")
+legend("bottomleft",legend=c("Raw Data", "Optimal Holt-Winters","Less Weight to Recent"),
+       col=c("black","blue", "red"), lty=c(1,2,2), cex=0.8, box.lty=0)} 
+```
+
+### Forecasting with Holt Winters
+
+Let's predict one step ahead
+
+```{r}
+predict(HW1, 1, prediction.interval = TRUE, level=0.95)
+```
+
+And compare to the observed value in the testing set
+
+```{r}
+window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014,1), end = c(2014,1))#observation
+```
+
+- The forecast of .415 seems closer to the actual .429\
+- But the confidence bound seems wider.
+
+## ARMA
+
+AutoRegressive Moving Average (ARMA) models are the bedrock of time series modeling. The basic idea is that every time series has its own temporal \`fingerprint". That fingerprint may depend upon its own past (AR), and/or the errors from that specification may also depend upon their own past (MA).
+
+The further in the past that is relevant, the higher the "order" of the model. For instance, if housing prices in March depend upon housing prices in February and January, we have and order lag of 2, yielding AR(2).
+
+- There could be economic inertia. e.g. higher prices generate higher demand, which prompts higher prices. This could continue until supply catches up, which could take some time.
+- There could be a latent driver that itself was temporal persistent. Being latent, we don't have that driver.
+- Thankfully, we can use a recursive substitution trick to capture the missing feature. (See lecture notes for details). Intuitively, ...
+- Suppose $HousePrice_{t}=f(CPI_{t})$ and $CPI_{t}=f(CPI_{t-1})$.
+- This implies that $HousePrice_{t}=f(CPI_{t-1})$, but if we don't have CPI (in this silly example) this we can't estimate this model.
+- Thankfully, $HousePrice_{t-1}=f(CPI_{t-1})$, so we can proxy the persistent latent driver CPI by using housing prices own temporal persistence $HousePrice_{t-1}=f(HousePrice_{t-1})$
+- This is the foundation for ARMA-type models
+
+### Detect ARMA patterns
+
+```{r}
+acf2(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+     main = "ACF and PACF of Price Index Growth") 
+```
+
+- The periodic swings in the ACF indicate some type of seasonality.
+- The seasonal wave cresting roughly every twelve months is suggestive of an annual cycle.
+- The spikes in the PACF suggest the possibility of a moving average MA component or order 1 or 2.\
+- Reading the correlogram for this purpose is usually referred to as the Box Jenkins approach. There are automatic search tools as well.
+
+We can consider a 12month lag.
+
+```{r}
+acf2(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12))%>%diff(lag = 12), 
+     main = "ACF and PACF of Price Index Growth Diff 12", max.lag = 36)
+```
+
+- Notice the seasonal wave of autocorrelation is gone.\
+- The remaining ACF decay and the single PACF indicate a remaining MA component.
+
+### Fit ARMA
+
+#### AR(1)
+
+We can fit an arma model by indicating the number of AR lags and how many MA lags. In this case, let's first an AR(1,0,0) \[often written as AR(1)\] $Price_{t} = \alpha + \beta Price_{t-1}+u_{t}$
+
+```{r}
+ARMA1 <- arima(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+               order=c(1, 0, 0))
+summary(ARMA1)
+```
+
+- A 1 unit change in house price growth this month is associated with a .9261 unit increase in house price growth next month; i.e. this series is highly persistent.
+- The intercept is the expected level of house price growth next month if prices didn't grow at all this month.
+
+#### ARMA(1,1)
+
+```{r}
+ARMA11 <- arima(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+               order=c(1, 0, 1))
+summary(ARMA11)
+```
+
+### Seasonal ARMA
+
+The ARMA structure is similar in spirit to our seasonal decomposition. They both use a series' own past for modeling. We can combine the two with a Seasonal ARMA.
+
+The c(p,d,q) elements in the ARMA function indicate the AR(p), MA(q), and the number (d) of differences. Similarly, seasonal components can be added analogously.
+
+Consider an ARMA(1,0,0)(1,1,2)12 would be $Price_{t}=\alpha+\beta_{1} Price_{t-1}+\beta_{2}Price_{t-12}+\gamma_{1}u_{t-12}+\gamma_{2}u_{t-24}+u_{t}$
+
+We could apply the seasonal ARMA directly to the Price Growth or even the Price series (with differencing), but we've been working with the SA price growth series, which has a meaningful interpretation for us, so we'll proceed with that. Moreover, we did note that some seasonality did remain in that SA series, so we can attempt to address here.
+
+```{r}
+ARMA11S <- arima(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+               order=c(1, 0, 0), seasonal = list(order = c(0,1,2), period = 12))
+summary(ARMA11S)
+```
+
+- We want the smallest AIC (even the most negative)
+- The Seasonal model appears to have the smallest -128.53
+
+### Auto Detect Lag Length
+
+We can search among the evaluation criterion to find the optimal ARMA order.
+
+```{r}
+ARIMA_auto <- auto.arima(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), seasonal = TRUE)
+summary(ARIMA_auto)
+```
+
+- Here, R found an ARMA(2,0,2) with a 2 month seasonal component.\
+  $Price_{t}=\alpha+\beta_{1} Price_{t-1}+\beta_{2}Price_{t-2}+\gamma_{1}u_{t-1}+\gamma_{2}u_{t-2}+\gamma_{t-2}u_{t-12}+\gamma_{4}u_{t-24}+u_{t}$
+
+### Post Estimation Diagnostics
+
+```{r}
+Box.test(residuals(ARIMA_auto), type = "Ljung-Box") 
+```
+
+- Recall the Lung Box Ho: No Autocorrelation in the errors.
+- The very high pvalue suggests we fail to reject (ie no remaining serial correlation).
+- Suggest we fit the series reasonably well with its own temporal dynamics
+
+```{r}
+tsdisplay(residuals(ARIMA_auto), main='Model Residuals')
+```
+
+- The visual diagnostics look pretty good.\
+- There are some annual spikes in the residuals
+- There some issues with the model surrounding the GFC, which is not surprising.
+
+### Forecast Seasonal ARMA
+
+Let's use this ARMA model to predict one step ahead into the testing sample.
+
+```{r}
+predict(ARIMA_auto, 1, prediction.interval = TRUE, level=0.95)
+```
+
+And recall the observed value:
+
+```{r}
+window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014,1), end = c(2014,1))#observation
+```
+
+- The fit is pretty good within relatively small standard error.
+
+## ARMA-GARCH
+
+So far we've been focused on the price growth series. We can use ARMA to model or forecast that growth rate using its own temporal persistence.
+
+The variability of the series may ALSO be temporally persistent.
+
+- There could be an excluding driver that is swinging widely (e.g. lumber prices might be rising dramatically amid a sudden forest fire)
+- This variability feed in directly to our confidence intervals.
+- Fundamentally, that variability matters because it might impact decision making (e.g. if house prices are very variable, I may not know if now is a good time to invest in a home)
+- Variability of time series is often itself autoregressive. So we have persistence in the "level" and "variance" of a series.
+- By imposing an autoregressive structure onto the residuals of the model we can capture this characteristic.
+
+### Visualize GARCH Effects
+
+Let's visualize the variance of the model residuals.
+
+```{r}
+residualSqr = residuals(ARIMA_auto)^2 
+tsdisplay(residualSqr, main = "Residual Square") 
+```
+
+- Residual variance is proxied with the square of the residual
+- Notice the persistence in the residual variance visa vis the ACF and PACF
+- This is indicative of autoregressive volatility
+- Notice also the spikes around the 2008 housing crisis, where uncertainty in the housing market was terribly high
+
+### Test for GARCH
+
+We can test formally for (G)ARCH type effects with an Engle LM Test, which determines if the residual variance is indeed related to its own past.
+
+Ho: No ARCH effects (white noise)
+
+Ha: ARCH effects
+
+```{r}
+library(FinTS)
+ArchTest(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), lags = 1, demean = TRUE)
+```
+
+- Notice that the small p value suggests we reject the null
+- Implying we have ARCH-type effects
+- Our model fit the \`\`level" of the series well, but something remains in the residual that is persistent.
+
+### Fitting an ARMA-GARCH
+
+Augmenting our ARMA model with GARCH effects is easy in R. One limitation is the inability to forecast seasonal ARIMA-GARCH directly. So, we will demonstrate without seasonality.
+
+#### Find approprate ARMA
+
+```{r}
+ARIMA_nonseasonal<-auto.arima(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)), 
+                               seasonal = FALSE)
+predict(ARIMA_nonseasonal,1, prediction.interval = TRUE, level=0.95)
+```
+
+#### Fit ARMA-GARCH
+
+We'll use that optimal ARMA structure as the basis for the "mean" specification. We'll also use the "workhorse" GARCH specification of a GARCH(1,1), which includes one lag of the variance of the errors (GARCH) as well as one lag of the model residuals (ARCH).
+
+```{r}
+library(rugarch)
+spec <- ugarchspec(variance.model=list(model="sGARCH", garchOrder=c(1,1)),
+                   mean.model=list(include.mean = T, armaOrder=c(3,2)), 
+                   distribution.model="norm")
+garch_fit <- ugarchfit(spec = spec, data = window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12)))
+coef(garch_fit)
+```
+
+#### 1-step Ahead ARMGARCH
+
+```{r}
+ugarchforecast(fitORspec = garch_fit, n.ahead = 1)
+```
+
+For comparison, the observed testing sample observation was
+
+```{r}
+window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014,1), end = c(2014,1))#observation
+```
+
+- Notice the fit is quite good.
+
+## NNET
+
+A feed forward neural network with hidden layers can leverage lagged inputs for forecasting.
+
+### Fit the NNET
+
+```{r}
+set.seed(123) # set random seed so that we can replicate the example  
+NNET <- nnetar(window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12))) 
+```
+
+### Forecast the NNET
+
+In the following, h = \# of periods ahead to forecast. PI = True computes prediction intervals.
+
+```{r}
+forecast(NNET, h = 1, PI=TRUE)  
+```
+
+As a reminder
+
+```{r}
+window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014,1), end = c(2014,1))#observation
+```
+
+## Random Forest
+
+We must use caution when implementing a random forest model with time series data. As you may know, random forests are built by randomly selecting training data, upon which we estimate a regression tree. The process is repeated and then averaged together in an ensemble. The process of randomly selecting the observations to be used in the training set will disrupt the temporal persistence of the data. We need to ensure that the we are always using training data that occurred prior to the testing data. As such, we use forward-validation rather than k-fold cross validation.
+
+### Prep data
+
+This step of prepping the data is sometimes called time embedding.
+
+```{r}
+lag_order <- 12 # the lags number you want to include in your model
+RF_data <- embed(df_adjts[,"PriceIndexGrowthSA"], lag_order + 1) %>% # embedding matrix
+  `colnames<-`(c("Raw",paste("Lag",1:lag_order, sep=''))) %>% ts(end = end(df_adjts), frequency = 12)
+head(RF_data)
+```
+
+### Assign Train and Test Samples
+
+```{r}
+RF_traindata <- window(RF_data, end = c(2013, 12))
+RF_testdata <- window(RF_data, start = c(2014, 1))
+
+y_train <- RF_traindata[, 1] # the target
+X_train <- RF_traindata[, -1] # everything but the target
+y_test <- RF_testdata[, 1]
+X_test <- RF_testdata[, -1]
+```
+
+### Fit the Random Forest
+
+```{r}
+library(randomForest)
+set.seed(123) # set random seed so that we can replicate the example
+RF_fit <- randomForest(X_train, y_train)
+```
+
+### Forecast the Random Forest
+
+```{r}
+predict(RF_fit, head(X_test,1)) 
+```
+
+And a reminder of the testing sample
+
+```{r}
+window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014,1), end = c(2014,1))
+```
+
+- We get a relatively accurate forecast.\
+- Unfortunately, a confidence interval isn't provided natively.
+
+## Prophet
+
+```{r}
+library(prophet)
+```
+
+### Prep Data
+
+```{r}
+Prophet_traindata <- df_adj[1:323,]
+Prophet_testdata <- df_adj[324:nrow(df_adj) ,]
+df_prophet <- Prophet_traindata %>%
+  select(-HousingStartGrowth) %>%
+  rename(ds = Date) %>%
+  rename(y = PriceIndexGrowthSA)
+```
+
+### Forecast with Prophet
+
+```{r}
+m <- prophet(df_prophet)
+future <- make_future_dataframe(m, periods = 365, freq = "day", include_history = TRUE) # periods: Int number of periods to forecast forward.
+forecast <- predict(m, future)
+forecast
+```
+
+## Multi Step Ahead Forecasts
+
+### Background
+
+Let's define Static and Dynamic multi step ahead forecasts.
+
+- Static Forecast:
+  - Train = 1990-2000. Test = 2001 (1 step ahead)
+  - Train = 1990-2000. Test = 2002 (2 step ahead)
+- Dynamic Forecast:
+  - Train = 1990-2000. Test = 2001 (1 step ahead)
+  - Train = 1990-2000 & 2001 Forecast. Test = 2002 (1 step ahead)
+
+Notice that static forecasts successively further into the future, which can be difficult. Meanwhile, dynamic forecasts build upon potentially error-prone prior forecasts, which can be equally troublesome.
+
+Notice pure distributed lag models (i.e. $Y_{t}=\alpha + \beta X_{t-1}+u_{T]$}) don't permit dynamic forecasts since they require a forecast of $X$. Moreover, distributed lag models only permit static forecasts up util the horizon of the $X$ lag (i.e. one in this case).
+
+### Forecasts
+
+Let's use our training set, which ended in Dec2013 to create a series of 24 static forecasts (ie through the end of 2015).
+
+```{r}
+### ARIMA
+ARIMA_mulpred <- ts(forecast(ARIMA_auto, h = 24)$mean, start = c(2014,1), frequency =12)
+
+### ARMA-ARCH
+Garch_mulpred <- ts(fitted(ugarchforecast(fitORspec = garch_fit, n.ahead = 24)), start = c(2014,1), frequency =12)
+
+### Holt-Winter
+HW1_mulpred <- ts(forecast(HW1, h = 24)$mean, start = c(2014,1), frequency =12)
+
+### NNET
+NNET_mulpred <- ts(forecast(NNET, h = 24)$mean, start = c(2014,1), frequency =12)
+
+### Random Forest
+# We will need to write a loop to get static multiple step ahead forecast
+h <- 24
+RF_mulpred <- matrix(NA, h, 1)
+X_multest <- head(X_test,1)
+for (i in 1:h){
+  set.seed(123)
+  RF_mulpred[i] <- predict(RF_fit, X_multest)
+  X_multest[2:ncol(X_multest)] <-  X_multest[-ncol(X_multest)] # update the "regressor" with predicted value
+  X_multest[1] <- RF_mulpred[i]
+}
+RF_mulpred <- ts(RF_mulpred, start = c(2014,1), frequency = 12)
+
+### Prophet
+df_prophet <- Prophet_traindata %>%
+  select(-HousingStartGrowth) %>%
+  rename(ds = Date) %>%
+  rename(y = PriceIndexGrowthSA)
+m <- prophet(df_prophet)
+future <- make_future_dataframe(m, periods = 24, freq = "month")
+forecast <- predict(m, future)
+fcst <- forecast[324:nrow(forecast),]
+Prophet_mulpred <- ts(fcst[[16]], start = c(2014, 1), frequency = 12)
+
+### Plot Forecast
+Test<-window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014, 1), end=c(2015,12))
+mulpreds <- ts.union(ARIMA_mulpred, Garch_mulpred, HW1_mulpred, NNET_mulpred, RF_mulpred, Prophet_mulpred, Test) %>% 
+  `colnames<-`(c("ARMA","ARMA-GARCH","Holt Winters", "NNETAR", "Random Forest", "Prophet", "TestSample"))
+autoplot(mulpreds) +
+  labs(color ='', y = "Forecast", x = '', title = "Static 24-Step Ahead Forecast")
+```
+
+### Forecast evaluation
+
+Let's compute the out of sample (OOS) forecast errors
+
+```{r}
+errOOS <- ts((window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014, 1)) - mulpreds[,-7]),
+             start = c(2014,1), frequency =12)%>% 
+            `colnames<-`(c("ARMA","ARMA-GARCH","Holt Winters", "NNETAR", "Random Forest", "Prophet"))
+```
+
+We can summarize the errors
+
+```{r}
+summary(errOOS)
+```
+
+Let's construct the Mean Squared Forecast Error (MSFE).
+
+```{r}
+MSFE<-colMeans(errOOS^2,na.rm = TRUE)
+MSFE
+```
+
+- ARMA-GARCH is a clear winner to the other models.\
+- The complex Neural Net, Prophet, and RF behave about equally to each other.
+
+## Simulation
+
+There are many uses of simulation in a time series context.
+
+Parametric simulation (i.e. Monte Carlo) is often used when you have a good sense of the DGP. Meanwhile, non parametric simulation (i.e. Bootstrapping) relies upon successive draws of the empirical distribution.
+
+In the following we will demonstrate using bootstrapping for construction forecast confidence intervals.
+
+### Bootstrapping Time Series
+
+Recall that bootstrapping randomly resamples from the observed dataset in order to create many pseudo samples for analysis. The model of interest is implemented on each pseudo sample. The range of the resulting estimates provides a confidence interval for the estimation on the observed sample.
+
+Unfortunately, random resampling disrupts the temporal persistence of the process. So, we rely upon block bootstrapping. Briefly, suppose your EDA suggests that the series has a temporal persistence of 12 months. Then we resample from the observed data by drawing blocks of 12 successive months. We can stitch these blocks together to generate a a pseudo sample of the desired size.
+
+### Create Block Bootstrap Samples
+
+Note that due to the simulation process the pseudo samples you draw may be different each time. Best practice is to draw several hundred (or thousand) pseudo samples. For illustratives purpose, we're only drawing for 4 pseudo samples here.
+
+```{r}
+nT = nrow(df_adjts)
+Train = window(df_adjts[,"PriceIndexGrowthSA"], end = c(2013,12))
+Test = window(df_adjts[,"PriceIndexGrowthSA"], start = c(2014, 1))
+TrainNum <- round(length(Train))
+BootpathNum = 4
+BootSamples <- bld.mbb.bootstrap(Train, BootpathNum,block_size=12) %>% data.frame() %>% ts(end= end(Train), frequency=12)
+colnames(BootSamples) <- c(lapply(1:(BootpathNum), FUN =function(x){paste("Path",x,sep="")}))
+plot(BootSamples, main = "Bootstrapped Samples")
+```
+
+### Bootstrapping for a Confidence Interval
+
+Our goal here is to form a confidence interval around our forecast. We want to avoid making distributional assumptions, so we rely upon bootstraps.
+
+#### Fit an ARIMA to Training Sample
+
+```{r}
+ARMA_fit <- auto.arima(Train)
+arimafc <- forecast(ARMA_fit, h=nT-TrainNum, level=95)
+arimafc_err <- df_adjts[,"PriceIndexGrowthSA"] - arimafc$mean
+```
+
+#### Forecast on each Pseudo Sample
+
+Use that fitted model specification and parameter estimates to construct forecasts for each bootstrap sample.
+
+```{r}
+Bootfcast <- matrix(0, nrow=BootpathNum, ncol=nT-TrainNum)
+for(i in seq(BootpathNum)) {
+  ARMA_refit <- Arima(BootSamples[,i], model=ARMA_fit) # fit model to bootstrapped samples without re-estimating
+  Bootfcast[i,] <- forecast(ARMA_refit, h = nT-TrainNum)$mean}
+```
+
+#### Gather the Forecasts
+
+We will gather all of the forecasts for Jan2014, and compute the 2.5% and 97.5% quantiles, which will serve to form a 95% confidence interval. Then repeat that for Feb2014, etc...
+
+```{r}
+bootfc <- structure(list(
+  mean = ts(colMeans(Bootfcast), start = start(Test), frequency=12),
+  lower = ts(apply(Bootfcast, 2, quantile, prob=0.025), start = start(Test), frequency=12),
+  upper = ts(apply(Bootfcast, 2, quantile, prob=0.975), start = start(Test), frequency=12),
+  level = 95),
+  class="forecast")
+```
+
+```{r}
+{plot(bootfc, xlim = c(1988,2023),main="Bootstrap Forecasts", shadecols = "gray70",fcol = NA)
+lines(df_adjts[,"PriceIndexGrowthSA"], col = "black", lty = 2)
+legend("bottomleft",legend=c("Raw Data","Bootstrapped Confidence Interval"),
+       col=c("black","grey70"), lty=c(2,1), lwd = c(1,4), cex=0.8, box.lty=0)}
+```
+
+- The gray region illustrates the range of the 95% forecast interval.
+- Notice the large spike of the black line outside of the gray near the end of the sample after 2020.
+- That implies our series experienced a "rare" event (e.g. price changes around COVID)
+
+### Bootstrap Aggregating (Bagging)
+
+Aggregate forecasts across bootstrap sample (aka "bagging") can be used to improve forecast accuracy by reducing one or more sources of uncertainty. Consider:
+
+1)  Parameter Uncertainty --- e.g. is $\hat{\beta}$ correct?
+2)  Model Uncertainty --- e.g should I use ARMA(1,1) or ARMA(3,2) when I train?
+
+Note: the term model uncertainty sometimes is decomposed to mean the proper model within the training period and stability of the DGP into the out of sample period.
+
+Bagging can help to ameliorate parameter and model uncertainty.
+
+Let's say we found that an ARMA(1,1) was optimal for our series in the training period and we estimate the parameters $\Theta_{ARMA(1,1)}$
+
+Case 1: Produce 1000s of bootstrap paths. For each path, forecast the series using the same $\Theta_{ARMA(1,1)}$.
+
+Case 2: Produce 1000s of bootstrap paths. For each path $h$, refit an optimal ARMA(1,1), yielding $\Theta^{h}_{ARMA(1,1)}$
+
+Case 3: Produce 1000s of bootstrap paths. For each path $h$, refit an optimal ARMA(p,q), yielding $\Theta^{h}_{ARMA(p,q)}$
+
+In the following we will illustrate Case 2 and Case 3 and compare to the single ARMA fit as our proxy for Case 1.
+
+#### Bagging-Case 2
+
+We will find the optimal functional form via information criterion.
+
+We will then fit this functional form to each bootstrap sample, and then forecast. In doing so, the ARMA order remains the same, but the parameter estimates are optimized for each bootstrap path.
+
+```{r}
+ARMA_fit <- auto.arima(Train) # optimal ARIMA is ARIMA(2,0,2)(0,1,2)[12]
+bagfcast1 <- matrix(0, nrow=BootpathNum, ncol=nT-TrainNum)
+for(i in seq(BootpathNum)) {
+  ARMA_refit <- Arima(BootSamples[,i], 
+                order=c(2, 0, 2), 
+                seasonal = list(order = c(0,1,2), period = 12)) # fitted ARIMA(2,0,2)(0,1,2)[12] with re-estimating
+  bagfcast1[i,] <- forecast(ARMA_refit, h = nT-TrainNum)$mean} %>% ts(frequency=12, start = start(Test))
+```
+
+#### Bagging-Version 2
+
+We will find the optimal ARIMA structure for each bootstrap path, fit the ARMA model accordingly, and then forecast.
+
+```{r}
+bagfcast2 <- matrix(0, nrow=BootpathNum, ncol=nT-TrainNum)
+for(i in seq(BootpathNum)) {
+  ARMA_refit <- auto.arima(BootSamples[,i]) # fitted optimal arima model with each sample
+  bagfcast2[i,] <- forecast(ARMA_refit, h = nT-TrainNum)$mean} 
+```
+
+#### Compare with (Non) Bagging
+
+Let's generate bagging forecast errors in the testing period.
+
+```{r}
+bagfc1 <- colMeans(bagfcast1) %>% ts(frequency=12, start = start(Test))
+bagfc2 <- colMeans(bagfcast2) %>% ts(frequency=12, start = start(Test))
+
+bagfc1_err <- df_adjts[,"PriceIndexGrowthSA"] - bagfc1
+bagfc2_err <- df_adjts[,"PriceIndexGrowthSA"] - bagfc2
+```
+
+Now compare the forecast errors built from the optimal arima forecast, bootstrapped forecast, bagging1 and bagging2 forecast errors
+
+```{r}
+{plot(arimafc_err, col = "red", xlab = "", ylab = "OOS Error", main = "ARIMA OOS Forecast Error")
+lines(bagfc1_err, col = "green", lty = 3)
+lines(bagfc2_err, col = "purple", lty = 4)
+legend("bottomleft",legend=c("ARIMA Forecast OOS Error",
+                             "Bagging Case 2 (Reduce Parameter Uncertainty)", 
+                             "Bagging case 3 (Reduce Parameter and Model Uncertainty)"),
+       col=c("red", "green","purple"), lty=c(1,2,3,4), cex=0.6, box.lty=0)
+}
+```
+
+- Bagging was able to improve upon the ARMA model
+- We were able to reduce parameter and model uncertainty in Cases 2 and 3, respectively
+- Notice again the poor fit around COVID. Simply using temporal persistence is not able to capture this exogenous shock
+
+## VAR
+
+Recall our earlier discussion where housing starts may both lead and lag price growth.
+
+Economically, it might be that rapid housing starts signal more supply, which depresses prices.
+
+Conversely, starts may be rising because prices are rising, which signal more profitability.
+
+This simultaneity will bias coefficient estimates of our univariate specifications. Instead, we might consider a simultaneous system of autoregressive specifications; i.e. a vector auto regression VAR.
+
+VAR tools are helpful for
+
+- Causal estimation / inference
+- Multivariate forecasting
+- Stress testing
+
+A VAR is an Autoregressive model across multiple series. e.g. housing starts are a function of past starts and prices; meanwhile prices may be a function of past prices and starts.
+
+### Lag Selection
+
+We can rely upon information criterion to guide our choice of lag structure.
+
+```{r}
+library(vars)
+VAR_data<-window(df_adjts[,c("PriceIndexGrowthSA","HousingStartGrowth")], end = c(2013,12)) 
+VARselect(VAR_data, lag.max = 12, type = "const", season = 12)$selection
+```
+
+The AIC suggests 12 lags.
+
+- The number of parameters proliferate quickly in a VAR.\
+- In our case, we will start with 2 lags, as indicated by other criterion above
+
+### Fitting a VAR
+
+```{r}
+VAR_est <- VAR(y = VAR_data, p = 2,  type = "const")
+summary(VAR_est)
+```
+
+### Interpreting a VAR
+
+- Notice that there are 2 "regression" tables. That's because we have a system of two equations.\
+
+- The parameter on HousingStartGrowth.l2 is 0.0022832
+
+- This means that a one unit increase in the housing starts growth rate this month is associated with a 0.0022832 unit increase in housing prices in two months from now
+
+- i.e. supply of homes is associated with future price increases (e.g. Say's law, supply breeds demand???)
+
+- We'll view the second output table
+
+- Most of the coefficients are not statistically significant. The R2 is low and the F stat is above 5%.
+
+- The implication is that after controlling for the simultaneity of prices, explaining housing is driven only by its own temporal dynamics (witness only HousingStartGrowth.l1 is significant)
+
+- Note: that does NOT mean that the model is perfect. We could/should consider other features and model orders.
+
+### VAR Diagnostics
+
+```{r}
+tsdisplay(VAR_est$varresult$PriceIndexGrowthSA$residuals, main = "Residuals of Price Index Growth")
+```
+
+```{r}
+tsdisplay(VAR_est$varresult$HousingStartGrowth$residuals, main = "Residuals of Housing Start Growth")
+```
+
+- Some annual seasonality seems to remain in each series, which you can see in the (P)ACF spikes near 12
+- The model shows particular trouble modeling prices around COVID.
+- Housing starts are worse in general (larger residuals than prices), but nothing unique about the COVID period
+
+### Fit Seasonal VAR
+
+We can attempt to address that possible remaining seasonality with a seasonal VAR.
+
+```{r}
+VAR_est2 <- VAR(y = VAR_data, p = 2, season = 12,type = "const") 
+summary(VAR_est2)
+```
+
+- The model fits are much improved. Witness the higher R2 and F stats.
+
+```{r}
+tsdisplay(VAR_est2$varresult$PriceIndexGrowthSA$residuals, main = "Residuals of Price Index Growth")
+tsdisplay(VAR_est2$varresult$HousingStartGrowth$residuals, main = "Residuals of Housing Start Growth")
+```
+
+- Appears to be gone for housing starts, but not prices.\
+- Again, prices are plagued by COVID. We should attempt to model that feature directly. Ignoring it could impact all of our estimates. We will avoid that for the sake of this tutorial.
+
+Recall the impact of possible serial correlation. So, it's best practice to consider our robust standard errors.
+
+```{r}
+library(lmtest)
+library(sandwich)
+coeftest(VAR_est2, vcov. = sandwich) 
+```
+
+- After controlling for the dynamic interactions, it appears that seasonality is more apparent in the housing starts model.\
+- Witness the bottom half of the table, coefficients such as HousingStartGrowth:sd1 have low pvalues indicating a significant seasonal difference.
+- The pvalues from the coefficients above suggest some indication of today's housing starts to explain tomorrow's prices, but not vice versa.\
+- We need a test of combine the aggregated effects of these forces.
+
+### Determining Direction of causality
+
+If Housing Starts today have an impact on Prices tomorrow, then Housing Starts are said to Granger Cause Prices.
+
+```{r}
+causality(VAR_est2, cause = "HousingStartGrowth")$Granger
+```
+
+Let's examine the other direction.
+
+```{r}
+causality(VAR_est2, cause = "PriceIndexGrowthSA")$Granger
+```
+
+- The relatively high pvalue suggests that we fail to reject.
+- Prices don't "cause" starts
+- The causal direction is only one way (housing starts to prices).
+
+### Impulse Response Function (IRF)
+
+Another way to understand and use the VAR estimates is via a stress test. For instance, what happens to Prices over the next 2yrs if we get a shock to housing starts today?
+
+```{r}
+irf_PriceIndexGrowth <- irf(VAR_est2, impulse = "HousingStartGrowth",        
+                            response = "PriceIndexGrowthSA",
+                            cumulative = FALSE,
+                            n.ahead = 20, boot = TRUE)
+
+irf_PriceIndexGrowth$irf$HousingStartGrowth[3]
+plot(irf_PriceIndexGrowth, ylab = "Price Index Growth", main = "Cumulative Impact of 1 sigma shock to  Housing Starts")
+
+irf_PriceIndexGrowth <- irf(VAR_est2, impulse = "HousingStartGrowth",        
+                            response = "PriceIndexGrowthSA",
+                            cumulative = TRUE,
+                            n.ahead = 20, boot = TRUE)
+
+irf_PriceIndexGrowth$irf$HousingStartGrowth[3]
+plot(irf_PriceIndexGrowth, ylab = "Price Index Growth", main = "Cumulative Impact of 1 sigma shock to  Housing Starts")
+```
+
+- From the first graph we can see that a 1 sigma rise in housing starts this month will trigger a rise in house price growth next month
+- This shock's effect will grow more in the second and third months.
+- By the 4th and 5th months, the shock's impact is fading.\
+- Within roughly 1.5-2 yrs, the shock's impact is gone.\
+- The second graph shows the CUMULATIVE impacts, which tells the same story, but from a different visual perspective.
+
+```{r}
+irf_HousingStartGrowth <- irf(VAR_est2, impulse = "PriceIndexGrowthSA", 
+                              cumulative = FALSE, 
+                              response = "HousingStartGrowth", 
+                              n.ahead = 20, boot = TRUE)
+plot(irf_HousingStartGrowth, ylab = "Housing Start Growth", main = "Cumulative Impact from 1 sigma shock to Prices")
+irf_HousingStartGrowth <- irf(VAR_est2, impulse = "PriceIndexGrowthSA", 
+                              cumulative = TRUE, 
+                              response = "HousingStartGrowth", 
+                              n.ahead = 20, boot = TRUE)
+plot(irf_HousingStartGrowth, ylab = "Housing Start Growth", main = "Cumulative Impact from 1 sigma shock to Prices")
+```
+
+- A one unit increase in prices triggers a drop in housing starts for a couple of months
+- Then the impact rises and fades quickly
+- Notice that throughout the CI bands in red surround the 0 line, indicating little statistical significance.
+
+### Forecast with VAR
+
+Given the causality findings, we may consider refining the model. For now, we'll use that estimated structure to predict both Prices and Starts 24-months head.
+
+```{r}
+VAR_mulpred <- predict(VAR_est2, n.ahead = 24)
+plot(VAR_mulpred, names = "PriceIndexGrowthSA", main = "Forecast of Price Growth")
+plot(VAR_mulpred, names = "HousingStartGrowth", main = "Forecast of Housing Starts Growth")
+
+```
+
+- The red dashed lines are 95% CIs.
+- The Price Growth CIs are very wide. We saw evidence of this earlier with the poor explanatory power especially during COVID.
+- Meanwhile, the housing starts forecast seems much more stable.
+- It detects the seasonality and accommodates the dynamic linkages with prices.
