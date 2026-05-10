@@ -1,6 +1,6 @@
 # Housing Price Forecasting via Time Series & VAR Analysis
 
-**Tools:** R · Quarto · Time Series Forecasting · VAR · FRED API · fredr · dplyr
+**Tools:** R · Quarto · Time Series Forecasting · VAR · FRED API · fredr · dplyr · ggplot2
 
 ---
 
@@ -19,7 +19,7 @@ The objective was to evaluate how housing supply activity relates to national ho
   - S&P/Case-Shiller U.S. National Home Price Index
   - U.S. Housing Starts
 - Cleaned and transformed monthly economic time series data
-- Conducted exploratory trend analysis and stationarity evaluation
+- Conducted exploratory trend and stationarity analysis
 - Applied forecasting workflows for housing market analysis
 - Built Vector Autoregression (VAR) models to analyze dynamic relationships between variables
 - Used Quarto and R Markdown for reproducible analytical reporting
@@ -50,10 +50,37 @@ Source: https://fred.stlouisfed.org/
 
 ---
 
+## Project Visuals
+
+### Housing Price Trends
+
+Visualization of historical housing price movement using the S&P/Case-Shiller U.S. National Home Price Index.
+
+![Housing Price Trends](images/housing-price-trends.png)
+
+---
+
+### Housing Starts Analysis
+
+Monthly U.S. housing starts used to evaluate supply-side market activity and economic trends.
+
+![Housing Starts Analysis](images/housing-starts-analysis.png)
+
+---
+
+### VAR & Forecasting Results
+
+Time series forecasting and Vector Autoregression (VAR) outputs used to analyze relationships between housing prices and housing starts.
+
+![VAR Forecast Results](images/var-forecast-results.png)
+
+---
+
 ## Repository Structure
 
 ```text
 data/        -> downloaded or processed datasets
+images/      -> charts and forecasting visuals
 notebooks/   -> Quarto and R Markdown analytical workflows
 reports/     -> exported PDF project reports
 ```
