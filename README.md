@@ -57,7 +57,7 @@ Source: https://fred.stlouisfed.org/
 
 Historical housing starts activity showing long-term cyclical movement and market disruptions.
 
-![Housing Starts](images/Housing-Starts.png)
+![Housing Starts](./Images/Housing-Starts.png)
 
 ---
 
@@ -65,7 +65,7 @@ Historical housing starts activity showing long-term cyclical movement and marke
 
 Comparison of housing starts and national housing price index behavior over time.
 
-![Time Series](images/Time-Series.png)
+![Time Series](./Images/Time-Series.png)
 
 ---
 
@@ -73,7 +73,7 @@ Comparison of housing starts and national housing price index behavior over time
 
 Decomposition of trend, seasonality, and residual components within the housing market time series.
 
-![Additive Decomposition](images/Decomp-of-Additive-Time%20Series.png)
+![Additive Decomposition](./Images/Decomp-of-Additive-Time%20Series.png)
 
 ---
 
@@ -81,7 +81,7 @@ Decomposition of trend, seasonality, and residual components within the housing 
 
 Lagged relationship analysis between housing starts growth and housing price growth.
 
-![Growth Index](images/Growth-Index.png)
+![Growth Index](./Images/Growth-Index.png)
 
 ---
 
@@ -89,7 +89,7 @@ Lagged relationship analysis between housing starts growth and housing price gro
 
 Forecasted housing starts growth using time series forecasting techniques.
 
-![Housing Growth Forecast](images/Housing-Growth-Forecast.png)
+![Housing Growth Forecast](./Images/Housing-Growth-Forecast.png)
 
 ---
 
@@ -97,7 +97,7 @@ Forecasted housing starts growth using time series forecasting techniques.
 
 Visualization of recurring seasonal behavior within housing market activity.
 
-![Seasonality](images/Seasonality(1).png)
+![Seasonality](./Images/Seasonality(1).png)
 
 ---
 
@@ -105,7 +105,7 @@ Visualization of recurring seasonal behavior within housing market activity.
 
 ```text
 data/        -> downloaded or processed datasets
-images/      -> charts and forecasting visuals
+Images/      -> charts and forecasting visuals
 notebooks/   -> Quarto and R Markdown analytical workflows
 reports/     -> exported PDF project reports
 ```
